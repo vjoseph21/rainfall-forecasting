@@ -1,0 +1,498 @@
+---
+title: "TS_Final_Project"
+author: "Vishal Vincent Joseph"
+date: "11/15/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+
+# 1) Importing libraries
+```{r}
+library(tidyverse)
+library(tseries)
+library(fpp)
+library(ggplot2)
+library(forecast)
+library(arfima)
+library(TSA)
+```
+
+
+# 2) Data preparation
+```{r}
+
+# loading raw csv
+rainfall_all <- read_csv("rainfall in india 1901-2015.csv")
+
+# filtering to quarterly 'Kerala' data
+rainfall_KL <- rainfall_all %>% 
+  filter(SUBDIVISION == "KERALA") %>% 
+  select(c(2, 16:19)) %>% 
+  pivot_longer(!YEAR, names_to = "month", values_to = "rainfall_mm")
+
+rainfall_ts <- ts(rainfall_KL['rainfall_mm'], start=1901, frequency=4)
+```
+
+
+# 3) Exploratory Data Analysis
+
+## Basic TS plotting
+```{r}
+
+# visualising TS plot
+plot(rainfall_ts, main="Rainfall (mm)", panel.first = grid())
+
+# visualising TS plot with TS components
+tsdisplay(rainfall_ts)
+```
+Dataset Characteristics:
+1) No visible trend
+2) From a first look at the chart, it looks like quarterly seasonality is present
+3) There is varying variance and data will require Box-Cox transformation
+4) Even without running any tests, we could come to the conclusion that data is
+non-stationary
+5) The ACF chart seems to appear constant due to only 25 lags being displayed,
+and it looks like there is probably a slow decay. It will require a deeper look
+with greater number of lags to be certain. The PACF drops off around lag 4. At
+this point the process seems like an AR(4) process but such a conclusion would
+make sense only after making the data stationary.
+
+## In-depth view of ACF and PACF
+```{r}
+acf(rainfall_ts, 500)
+pacf(rainfall_ts, 100)
+```
+Thus, this proves that the ACF plot is slowly decaying and is an indicator of 
+non-stationarity. It also indicates a long-term memory and ARFIMA might be a 
+suitable option here.
+
+## Seasonal plot
+```{r}
+seasonplot(rainfall_ts)
+```
+Comments: For most years, the peak seems to be at Q3, which coincides with the
+monsoon season.
+
+
+# 4) Stationarity analysis 
+
+## Checking stationarity before Box-Cox
+```{r}
+kpss.test(rainfall_ts)
+adf.test(rainfall_ts)
+```
+Thus, the data is stationary even before applying any Box-Cox transformation.
+
+### Box-Cox transformation
+
+#### Estimating lambda
+```{r}
+# checking for Box-Cox transformation
+BoxCox.lambda(rainfall_ts)
+```
+
+#### Transforming the data
+```{r}
+
+# transforming raw data
+rainfall_ts_BC <- BoxCox(rainfall_ts, lambda = -0.14)
+
+# plotting BC transformed data
+plot(rainfall_ts_BC)
+```
+
+## Test for stationarity
+```{r}
+kpss.test(rainfall_ts_BC)
+adf.test(rainfall_ts_BC)
+```
+
+Comments:
+From both tests above, it is evident that the data is stationary both before and
+after BC and does not require any differencing for trend or level. However, 
+de-seasonalization is necessary and that is shown below.
+
+## Estimating de-seasonalization differencing level (without BC) and 
+## transforming data
+```{r}
+rainfall_ts_transformed <- diff(rainfall_ts, 4)
+tsdisplay(rainfall_ts_transformed)
+```
+Thus, a differencing of lag 4 results in de-seasonalization.
+
+## Final verification for stationarity
+```{r}
+kpss.test(rainfall_ts_transformed)
+adf.test(rainfall_ts_transformed)
+```
+
+Thus, this completes the transformation to a stationary process.
+
+## Plotting ACF and PACF for stationary data
+```{r}
+# ACF
+acf(rainfall_ts_transformed, 100)
+
+# PACF
+pacf(rainfall_ts_transformed, 100)
+```
+
+Final comments on data:
+When considering the seasonality component, the PACF decays exponentially with 
+most significant lags at the seasonal lags of 4, 8, etc while the ACF drops off
+abruptly post the seasonal lag of 4. This points to the fact that the
+stationary process is most probably an ARIMA(0,0,0)(0,1,1).
+
+# 5) Spectral analysis
+
+```{r}
+periodogram(rainfall_ts)
+```
+The frequency corresponding to the peak is ~0.25, indicating annual seasonality
+for the quarterly data.
+
+# 6) Model building
+
+## Splitting into train and test & visualizing
+```{r}
+train_ts <- window(rainfall_ts, start = c(1901, 1), end = c(2013,4))
+test_ts <- window(rainfall_ts, start = c(2014, 1), end = c(2015, 4))
+
+plot(train_ts, main="Rainfall - Training data", panel.first = grid())
+plot(test_ts, main="Rainfall - Test data", panel.first = grid())
+```
+
+## 6.1) Classical decomposition model
+
+```{r}
+plot(rainfall_ts)
+```
+ 
+Looking at the chart above of the raw data, it is unclear whether the seasonality
+is additive or multiplicative. Thus, we will need to explore both types for the 
+decomposition model. However, it is very clear that no trend exists.
+
+### Additive model
+```{r}
+fit_add <- decompose(rainfall_ts, type="additive")
+plot(fit_add)
+```
+### Multiplicative model
+```{r}
+fit_mult <- decompose(rainfall_ts, type="multiplicative")
+plot(fit_mult)
+```
+
+Comments: Additive makes more sense here since seasonal amplitude does not 
+consistently vary with time. 
+
+## 6.2) Seasonal Naive
+```{r}
+fit_snaive <- snaive(train_ts, h = 8)
+
+print(fit_snaive$model)
+plot(fit_snaive)
+```
+
+### checking residuals
+```{r}
+checkresiduals(fit_snaive)
+```
+Thus, residuals don't resemble white noise.
+
+### model performance
+```{r}
+# performance on test data
+mse_snaive <- mean((test_ts - fit_snaive$mean)**2)
+mape_snaive <- mean((abs(test_ts - fit_snaive$mean) / test_ts) * 100)
+
+print(paste("The Mean Squared Error for snaive model is", mse_snaive))
+print(paste("The Mean Absolute Percentage Error for snaive model is", 
+            mape_snaive))
+
+```
+
+
+## 6.3) SES
+```{r}
+fit_ses <- ses(train_ts, h = 8, lambda = -0.14)
+
+print(fit_ses$model)
+plot(fit_ses)
+```
+### checking residuals
+```{r}
+checkresiduals(fit_ses)
+```
+Thus, the residuals don't resemble white noise due to significant ACF
+lags and this indicates poor model performance.
+
+### model performance
+```{r}
+
+# performance on training data
+aicc_ses <- fit_ses$model$aicc 
+print(paste("The AICc value for SES model is", aicc_ses))
+
+# performance on test data
+mse_ses <- mean((test_ts - fit_ses$mean)**2)
+mape_ses <- mean((abs(test_ts - fit_ses$mean) / test_ts) * 100)
+
+print(paste("The Mean Squared Error for SES model is", mse_ses))
+print(paste("The Mean Absolute Percentage Error for SES model is", mape_ses))
+
+```
+
+Final comments:
+1) An in-between when considering extremes of naivee and average methods 
+2) Might not be very useful since seasonality is involved
+3) From the results, it can be seen that the forecasts are constant in the form 
+of a straight line, thus indicating poor performance
+
+
+## 6.4) Holt-Winters Seasonal method
+
+Comments: Can be used for both stationary and non-stationary data;
+Chose this over Holt's linear method due to presence of seasonality but no trend.
+
+1) Multiplicative seasonal
+
+```{r}
+fit_hw_mult <- hw(train_ts, h = 8, seasonal = "multiplicative")
+print(fit_hw_mult$model)
+plot(fit_hw_mult)
+```
+
+### checking residuals
+```{r}
+checkresiduals(fit_hw_mult)
+```
+Thus, the residuals don't resemble white noise.
+
+### model performance
+```{r}
+
+# performance on training data
+aicc_hw_mult <- fit_hw_mult$model$aicc 
+print(paste("The AICc value for HW multiplicative model is", aicc_hw_mult))
+
+# performance on test data
+mse_hw_mult <- mean((test_ts - fit_hw_mult$mean)**2)
+mape_hw_mult <- mean((abs(test_ts - fit_hw_mult$mean) / test_ts) * 100)
+
+print(paste("The Mean Squared Error for HW multiplicative model is", mse_hw_mult))
+print(paste("The Mean Absolute Percentage Error for HW multiplicative model is", mape_hw_mult))
+
+```
+
+
+2) Additive seasonal
+
+```{r}
+fit_hw_add <- hw(train_ts, h = 8, seasonal = "additive")
+print(fit_hw_add$model)
+plot(fit_hw_add)
+```
+
+### checking residuals
+```{r}
+checkresiduals(fit_hw_add)
+```
+Thus, the residuals don't resemble white noise.
+
+### model performance
+```{r}
+
+# performance on training data
+aicc_hw_add <- fit_hw_add$model$aicc 
+print(paste("The AICc value for HW additive model is", aicc_hw_add))
+
+# performance on test data
+mse_hw_add <- mean((test_ts - fit_hw_add$mean)**2)
+mape_hw_add <- mean((abs(test_ts - fit_hw_add$mean) / test_ts) * 100)
+
+print(paste("The Mean Squared Error for HW additive model is", mse_hw_add))
+print(paste("The Mean Absolute Percentage Error for HW additive model is", mape_hw_add))
+
+```
+
+Final comments:
+From comparing both the multiplicative and additive models, it looks like the
+former does better on the training data but worse when it comes to the test data.
+
+## 6.5) State space models
+
+### fitting the model
+```{r}
+state_space_auto_fit <- ets(train_ts, model="ZZZ")
+summary(state_space_auto_fit)
+```
+
+### checking residuals for auto fit
+```{r}
+checkresiduals(state_space_auto_fit)
+```
+
+### manual fit based on visual observation of raw data plot
+```{r}
+state_space_manual_fit <- ets(train_ts, model="ANA")
+summary(state_space_manual_fit)
+```
+
+### checking residuals
+```{r}
+checkresiduals(state_space_manual_fit)
+```
+Cooemnts:
+Though AIC for MNM is better, the residual chart looks better for ANA. So, decided
+to go ahead with ANA for now.
+
+### model performance on test data
+```{r}
+
+ets_mse <- mean((test_ts - forecast(state_space_manual_fit, h=8, level=c(80, 95))$mean)**2)
+ets_mape <- mean((abs(test_ts - forecast(state_space_manual_fit, h=8, level=c(80, 95))$mean) / test_ts) * 100)
+
+print(paste("The Mean Squared Error for ETS model is", ets_mse))
+print(paste("The Mean Absolute Percentage Error for ETS model is", ets_mape))
+
+```
+
+
+## 6.6) ARIMA model
+
+```{r}
+tsdisplay(rainfall_ts_transformed)
+```
+When considering the seasonality component, the PACF decays exponentially with 
+most significant lags at the seasonal lags of 4, 8, etc while the ACF drops off
+abruptly post the seasonal lag of 4. This points to the fact that the
+stationary process is most probably an ARIMA(0,0,0)(0,1,1).
+
+Since the data clearly exhibits seasonality, any rigorous modeling pertaining to non-seasonal
+ARIMA models were avoided.
+
+1) Non-seasonal ARIMA
+
+### using auto.arima
+```{r}
+ns_fit <- auto.arima(train_ts, seasonal=FALSE, trace=TRUE, approximation = FALSE)
+print(ns_fit)
+checkresiduals(ns_fit)
+```
+This gives ARIMA(4,0,0) as the best model but residuals don't resemble white noise.
+
+2) SARIMA modeling
+
+### using auto.arima
+```{r}
+s_fit <- auto.arima(train_ts, seasonal=TRUE, trace=TRUE, approximation=FALSE,
+                    D=1)
+print(s_fit)
+checkresiduals(s_fit)
+```
+The best model is ARIMA(1,0,0)(2,1,0)[4] and from Ljung-Box test, the residuals
+seem to not be autocorrelated.
+
+### using conclusion from ACF and PACF charts of stationary data
+```{r}
+s_fit_1 <- Arima(train_ts, order=c(0,0,0), seasonal=c(0, 1, 1))
+print(s_fit_1)
+checkresiduals(s_fit_1)
+```
+Thus, it seems like this model performs better than the auto.arima one
+when considering both AICc and BIC. Even the residuals are uncorrelated
+as per the Ljung-Box test.
+
+### experimenting with other P,D,Q combinations
+```{r}
+# modifying p, q, P, Q values
+
+test_fit_1 <- Arima(train_ts, order=c(0,0,1), seasonal=c(0, 1, 1))
+print(test_fit_1)
+checkresiduals(test_fit_1)
+
+test_fit_2 <- Arima(train_ts, order=c(1,0,1), seasonal=c(0, 1, 1))
+print(test_fit_2)
+checkresiduals(test_fit_2)
+
+test_fit_3 <- Arima(train_ts, order=c(0,0,1), seasonal=c(1, 0, 1))
+print(test_fit_3)
+checkresiduals(test_fit_3)
+```
+
+### best model performance on test data
+```{r}
+
+sarima_mse <- mean((test_ts - forecast(s_fit_1, h=8, level=c(80, 95))$mean)**2)
+sarima_mape <- mean((abs(test_ts - forecast(s_fit_1, h=8, level=c(80, 95))$mean) / test_ts) * 100)
+
+print(paste("The Mean Squared Error for best SARIMA model is", sarima_mse))
+print(paste("The Mean Absolute Percentage Error for best SARIMA model is", sarima_mape))
+
+```
+
+
+## 6.7) ARFIMA
+
+### fitting the model
+```{r}
+arfima_fit <- arfima(train_ts)
+summary(arfima_fit)
+```
+
+### inspecting the residuals
+```{r}
+arfima_resid <- resid(arfima_fit)
+plot.ts(arfima_resid[[1]])
+acf(arfima_resid[[1]])
+```
+ACF of residuals DO NOT resemble white noise and ARFIMA is probably not the best
+option here, most probably due to the presence of seasonality.
+
+
+## 6.8) Neural nets
+
+```{r}
+nn_fit <- nnetar(train_ts, p=10, repeats = 30)
+print(nn_fit)
+```
+
+### checking residuals
+```{r}
+checkresiduals(nn_fit)
+```
+The residuals are uncorrelated as per Ljung-Box test and resemble white noise
+for lags < 20.
+
+### model performance on test data
+```{r}
+
+nn_mse <- mean((test_ts - forecast(nn_fit, h=8, level=c(80, 95))$mean)**2)
+nn_mape <- mean((abs(test_ts - forecast(nn_fit, h=8, level=c(80, 95))$mean) / test_ts) * 100)
+
+print(paste("The Mean Squared Error for best NN model is", nn_mse))
+print(paste("The Mean Absolute Percentage Error for best NN model is", nn_mape))
+
+```
+
+
+# 7) Model Evaluation
+
+```{r}
+
+model_eval_df <- data.frame(
+ model_type = c("snaive", "HW (additive)", "ETS (ANA)", "SARIMA", "Neural Net"),
+ mse = c(mse_snaive, mse_hw_add, ets_mse, sarima_mse, nn_mse),
+ mape = c(mape_snaive, mape_hw_add, ets_mape, sarima_mape, nn_mape)
+)
+ 
+print(model_eval_df)
+```
+
+Conclusions:
+The SARIMA model performs best on MSE while Holt-Winters’ does best on MAPE.
