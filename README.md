@@ -7,4 +7,4 @@ Floods and droughts are becoming all the more common in India with every passing
 The data was acquired from the open source data portal of India. This data set contains monthly rainfall data of 36 meteorological subdivisions of India from 1901-2015. Rainfall is measured in mm. For this project, the state of Kerala was considered for analysis.
 
 ## Final Presentation
-The overall analysis and results of this project are documented in the [final presentation](https://github.com/vjoseph21/air-quality-prediction/blob/main/Report.pdf "final_report").
+The overall analysis and results of this project are documented [here](https://github.com/vjoseph21/rainfall-forecasting/blob/main/Presentation.pdf "final_presentation").
